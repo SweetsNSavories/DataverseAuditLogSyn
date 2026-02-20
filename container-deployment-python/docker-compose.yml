@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  account-audit-processor:
+    build: .
+    container_name: account-audit-processor
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      ENTITY: Account
+      BACKLOG_MODE: "true"
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+    networks:
+      - dataverse-audit-network
+    restart: unless-stopped
+
+  contact-audit-processor:
+    build: .
+    container_name: contact-audit-processor
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      ENTITY: Contact
+      BACKLOG_MODE: "true"
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+    networks:
+      - dataverse-audit-network
+    restart: unless-stopped
+
+  case-audit-processor:
+    build: .
+    container_name: case-audit-processor
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      ENTITY: Case
+      BACKLOG_MODE: "true"
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+    networks:
+      - dataverse-audit-network
+    restart: unless-stopped
+
+networks:
+  dataverse-audit-network:
+    driver: bridge

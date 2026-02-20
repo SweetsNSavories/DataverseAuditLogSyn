@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "DATAVERSE_ORG_URL": "https://yourorg.crm.dynamics.com",
+    "CLIENT_ID": "your-app-registration-client-id",
+    "CLIENT_SECRET": "your-app-registration-client-secret",
+    "SNOWFLAKE_USER": "your-snowflake-user",
+    "SNOWFLAKE_PASSWORD": "your-snowflake-password",
+    "SNOWFLAKE_ACCOUNT": "xy12345.us-east-1",
+    "SNOWFLAKE_WAREHOUSE": "COMPUTE_WH"
+  }
+}
