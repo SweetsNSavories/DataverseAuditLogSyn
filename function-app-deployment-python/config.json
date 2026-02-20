@@ -6,30 +6,85 @@
   "entities": [
     {
       "name": "Account",
-      "attributes": [
-        "name",
-        "telephone1",
-        "address1_city",
-        "address1_country"
-      ]
+      "attributes": ["name", "telephone1", "address1_city", "address1_country"]
     },
     {
       "name": "Contact",
-      "attributes": [
-        "fullname",
-        "emailaddress1",
-        "mobilephone",
-        "address1_city"
-      ]
+      "attributes": ["fullname", "emailaddress1", "mobilephone", "address1_city"]
     },
     {
       "name": "Case",
-      "attributes": [
-        "title",
-        "description",
-        "prioritycode",
-        "statuscode"
-      ]
+      "attributes": ["title", "description", "prioritycode", "statuscode"]
     }
-  ]
+  ],
+  "dataverse": {
+    "api": {
+      "version": "v9.2",
+      "timeout_seconds": 30,
+      "max_retries": 3,
+      "retry_delay_seconds": 1
+    },
+    "auth": {
+      "authority_url": "https://login.microsoftonline.com/common",
+      "token_cache_minutes": 55,
+      "scope": "https://org.dynamics.com/.default"
+    },
+    "query": {
+      "page_size": 5000,
+      "concurrent_audit_fetch": 5,
+      "batch_size_details": 5
+    }
+  },
+  "snowflake": {
+    "connection": {
+      "timeout_seconds": 30,
+      "max_retries": 3,
+      "retry_delay_seconds": 2
+    },
+    "query": {
+      "batch_insert_size": 100,
+      "max_pool_size": 10,
+      "min_pool_size": 1
+    }
+  },
+  "performance": {
+    "max_concurrent_entities": 3,
+    "thread_pool_size": 10,
+    "rate_limit_requests_per_second": 100,
+    "backoff_multiplier": 2.0,
+    "max_backoff_seconds": 30
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "[%(asctime)s] %(levelname)s: %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "output": {
+      "console": true,
+      "file": {
+        "enabled": true,
+        "path": "/var/log/audit-sync.log",
+        "max_size_mb": 100,
+        "backup_count": 5,
+        "level": "DEBUG"
+      }
+    },
+    "components": {
+      "dataverse": "INFO",
+      "snowflake": "INFO",
+      "auth": "INFO",
+      "sync": "DEBUG"
+    }
+  },
+  "features": {
+    "enable_state_tracking": true,
+    "enable_idempotent_upserts": true,
+    "enable_crash_recovery": true,
+    "enable_metrics": true,
+    "dry_run": false
+  },
+  "monitoring": {
+    "emit_metrics_interval_seconds": 60,
+    "log_progress_every_records": 1000,
+    "health_check_interval_seconds": 300
+  }
 }
