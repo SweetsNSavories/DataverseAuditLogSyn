@@ -1,0 +1,48 @@
+version: '3.9'
+
+services:
+  account-audit-processor:
+    build: .
+    container_name: dataverse-audit-account
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING}
+      BACKLOG_MODE: "true"
+      ENTITY: "Account"
+    restart: unless-stopped
+    networks:
+      - dataverse-audit-network
+
+  contact-audit-processor:
+    build: .
+    container_name: dataverse-audit-contact
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING}
+      BACKLOG_MODE: "true"
+      ENTITY: "Contact"
+    restart: unless-stopped
+    networks:
+      - dataverse-audit-network
+
+  case-audit-processor:
+    build: .
+    container_name: dataverse-audit-case
+    environment:
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING}
+      BACKLOG_MODE: "true"
+      ENTITY: "Case"
+    restart: unless-stopped
+    networks:
+      - dataverse-audit-network
+
+networks:
+  dataverse-audit-network:
+    driver: bridge

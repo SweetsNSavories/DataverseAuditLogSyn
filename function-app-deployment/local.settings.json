@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "DATAVERSE_ORG_URL": "https://yourorg.crm.dynamics.com",
+    "CLIENT_ID": "your-app-registration-client-id",
+    "CLIENT_SECRET": "your-app-registration-client-secret",
+    "COSMOS_CONNECTION_STRING": "DefaultEndpointProtocol=https;AccountName=your-cosmos-account;AccountKey=your-key;Database=AuditDb"
+  }
+}
