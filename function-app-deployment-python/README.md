@@ -2,6 +2,40 @@
 
 Azure Functions timer-triggered function. Runs every 10 minutes to capture new Dataverse audits and sync to Snowflake indefinitely.
 
+## Configuration
+
+### config.json - Fully Customizable
+
+Edit `config.json` to control:
+- **Window sizes** (backlog vs continuous)
+- **Entities** to process
+- **Attributes** to track per entity
+
+Example `config.json`:
+
+```json
+{
+  "windowSizeMinutes": {
+    "backlog": 60,
+    "continuous": 10
+  },
+  "entities": [
+    {
+      "name": "Account",
+      "attributes": ["name", "telephone1", "address1_city"]
+    },
+    {
+      "name": "Contact",
+      "attributes": ["fullname", "emailaddress1", "mobilephone"]
+    },
+    {
+      "name": "Case",
+      "attributes": ["title", "description", "prioritycode"]
+    }
+  ]
+}
+```
+
 ## Prerequisites
 
 - Azure Subscription with Function App
@@ -21,7 +55,7 @@ Azure Functions timer-triggered function. Runs every 10 minutes to capture new D
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Copy .env template
+# Copy config template and update credentials
 cp local.settings.json .env
 # Edit .env with your credentials
 ```
@@ -56,6 +90,26 @@ Update `local.settings.json` with Snowflake credentials:
     "SNOWFLAKE_ACCOUNT": "xy12345.us-east-1",
     "SNOWFLAKE_WAREHOUSE": "COMPUTE_WH"
   }
+}
+```
+
+### Customize config.json
+
+Change which entities and attributes are tracked:
+
+```json
+{
+  "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+  "entities": [
+    {
+      "name": "Lead",
+      "attributes": ["firstname", "lastname", "emailaddress1"]
+    },
+    {
+      "name": "Quote",
+      "attributes": ["name", "totalamount", "quoteid"]
+    }
+  ]
 }
 ```
 
@@ -199,6 +253,11 @@ func start --verbose
 - Check if 10 minutes enough for typical sync
 - Increase if needed: `"functionTimeout": "00:15:00"`
 
+### Custom config not loading
+- Verify `config.json` is in deployment package
+- Check logs for JSON parsing errors
+- Ensure entities exist in Dataverse
+
 ## Cleanup
 
 ```bash
@@ -219,3 +278,4 @@ Same resilience as container version:
 - On failure, restarts and reprocesses same 10-minute window
 - Idempotent upserts prevent duplicates
 - Atomic state updates prevent partial syncs
+- Configuration driven by config.json

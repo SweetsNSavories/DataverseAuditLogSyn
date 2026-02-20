@@ -3,6 +3,8 @@
 Dataverse Audit Sync - Backlog Phase (Python)
 Processes large time windows (60 min) to sync historical audits to Snowflake
 Runs in parallel Docker containers, one per entity (Account, Contact, Case)
+
+Configuration: Load from config.json, override with environment variables
 """
 
 import os
@@ -26,13 +28,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_config() -> Dict:
+    """Load configuration from config.json with environment variable overrides"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    # Load defaults from config.json
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            logger.info(f"Loaded config from {config_path}")
+    except FileNotFoundError:
+        logger.warning(f"config.json not found at {config_path}, using defaults")
+        config = {
+            "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+            "entities": [
+                {"name": "Account", "attributes": ["name", "telephone1", "address1_city"]},
+                {"name": "Contact", "attributes": ["fullname", "emailaddress1", "mobilephone"]},
+                {"name": "Case", "attributes": ["title", "description", "prioritycode"]}
+            ]
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in config.json: {e}")
+        sys.exit(1)
+    
+    return config
+
+
 # Environment variables
 DATAVERSE_ORG_URL = os.getenv("DATAVERSE_ORG_URL", "https://yourorg.crm.dynamics.com")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-ENTITY_TYPE = os.getenv("ENTITY", "Account")
 BACKLOG_MODE = os.getenv("BACKLOG_MODE", "true").lower() == "true"
 OVERRIDE_START_TIME = os.getenv("OVERRIDE_START_TIME")
+
+# Single entity filter (optional - process only one entity)
+ENTITY_FILTER = os.getenv("ENTITY")  # e.g., "Account" to process only Account
 
 # Snowflake connection
 SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
@@ -40,7 +74,9 @@ SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
 SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
 
-WINDOW_SIZE_MINUTES = 60 if BACKLOG_MODE else 10
+# Load configuration
+CONFIG = load_config()
+WINDOW_SIZE_MINUTES = CONFIG["windowSizeMinutes"]["backlog" if BACKLOG_MODE else "continuous"]
 
 
 async def get_dataverse_token() -> str:
@@ -158,7 +194,8 @@ async def fetch_audits_with_pagination(
 async def fetch_audit_details_with_retry(
     session: aiohttp.ClientSession,
     token: str,
-    audit_id: str
+    audit_id: str,
+    attributes: List[str]
 ) -> Optional[Dict]:
     """Fetch audit details via RetrieveAuditDetails action with 3-retry exponential backoff"""
     headers = {
@@ -168,7 +205,7 @@ async def fetch_audit_details_with_retry(
     
     payload = {
         "auditId": audit_id,
-        "propertySet": ["name", "telephone1", "address1_city"]
+        "propertySet": attributes
     }
     
     url = f"{DATAVERSE_ORG_URL}/api/data/v9.2/RetrieveAuditDetails"
@@ -196,10 +233,13 @@ async def fetch_audit_details_with_retry(
 async def process_window(
     token: str,
     window_start: datetime,
-    window_end: datetime
+    window_end: datetime,
+    entity: str,
+    attributes: List[str]
 ):
     """Process single 60-minute time window"""
-    logger.info(f"[{ENTITY_TYPE}] Processing window {window_start.isoformat()} to {window_end.isoformat()}")
+    logger.info(f"[{entity}] Processing window {window_start.isoformat()} to {window_end.isoformat()}")
+    logger.info(f"[{entity}] Tracking attributes: {', '.join(attributes)}")
     
     connection = get_snowflake_connection()
     
@@ -207,18 +247,18 @@ async def process_window(
         async with aiohttp.ClientSession() as session:
             # Fetch audit list
             audit_ids = await fetch_audits_with_pagination(
-                session, token, window_start, window_end, ENTITY_TYPE
+                session, token, window_start, window_end, entity
             )
             
             if not audit_ids:
-                logger.info(f"[{ENTITY_TYPE}] No audits found in window")
+                logger.info(f"[{entity}] No audits found in window")
                 return 0
             
             # Fetch details for each audit (concurrent, but batched in groups of 5)
             audit_details = []
             for i in range(0, len(audit_ids), 5):
                 batch = audit_ids[i:i+5]
-                tasks = [fetch_audit_details_with_retry(session, token, audit_id) for audit_id in batch]
+                tasks = [fetch_audit_details_with_retry(session, token, audit_id, attributes) for audit_id in batch]
                 results = await asyncio.gather(*tasks)
                 audit_details.extend([r for r in results if r])
                 await asyncio.sleep(0.1)  # Brief pause between batches
@@ -235,7 +275,7 @@ async def process_window(
                         """,
                         (
                             details.get("auditid", ""),
-                            ENTITY_TYPE,
+                            entity,
                             json.dumps(details),
                             datetime.utcnow().isoformat(),
                             run_id
@@ -243,11 +283,11 @@ async def process_window(
                     )
                 
                 connection.commit()
-                logger.info(f"[{ENTITY_TYPE}] Inserted {len(audit_details)} audits to Snowflake")
+                logger.info(f"[{entity}] Inserted {len(audit_details)} audits to Snowflake")
             
             # Update state (atomic - only after all inserts successful)
-            update_sync_state(connection, ENTITY_TYPE, window_end, len(audit_details))
-            logger.info(f"[{ENTITY_TYPE}] State updated: lastSyncEnd={window_end.isoformat()}")
+            update_sync_state(connection, entity, window_end, len(audit_details))
+            logger.info(f"[{entity}] State updated: lastSyncEnd={window_end.isoformat()}")
             
             return len(audit_details)
     
@@ -258,44 +298,67 @@ async def process_window(
 async def main():
     """Main entry point"""
     logger.info(f"Starting Dataverse Audit Sync (Python)")
-    logger.info(f"Entity: {ENTITY_TYPE}, Backlog Mode: {BACKLOG_MODE}, Window: {WINDOW_SIZE_MINUTES} min")
+    logger.info(f"Backlog Mode: {BACKLOG_MODE}, Window: {WINDOW_SIZE_MINUTES} min")
+    logger.info(f"Configuration loaded from config.json")
     
     # Get OAuth token
     token = await get_dataverse_token()
     logger.info("OAuth token acquired")
     
+    # Determine which entities to process
+    if ENTITY_FILTER:
+        # Process only specified entity
+        entities_to_process = [e for e in CONFIG["entities"] if e["name"] == ENTITY_FILTER]
+        if not entities_to_process:
+            logger.error(f"Entity '{ENTITY_FILTER}' not found in config.json")
+            sys.exit(1)
+        logger.info(f"Processing single entity: {ENTITY_FILTER}")
+    else:
+        # Process all entities from config
+        entities_to_process = CONFIG["entities"]
+        logger.info(f"Processing {len(entities_to_process)} entities from config")
+    
     # Get connection and state
     connection = get_snowflake_connection()
-    last_sync_end = get_sync_state(connection, ENTITY_TYPE)
+    
+    # Process each entity
+    for entity_config in entities_to_process:
+        entity_name = entity_config["name"]
+        attributes = entity_config["attributes"]
+        
+        logger.info(f"[{entity_name}] Starting with attributes: {attributes}")
+        
+        last_sync_end = get_sync_state(connection, entity_name)
+        
+        # Override start time if provided
+        if OVERRIDE_START_TIME:
+            try:
+                last_sync_end = datetime.fromisoformat(OVERRIDE_START_TIME)
+                logger.info(f"[{entity_name}] Override start time: {last_sync_end.isoformat()}")
+            except ValueError:
+                logger.warning(f"[{entity_name}] Invalid OVERRIDE_START_TIME: {OVERRIDE_START_TIME}")
+        
+        # Process windows
+        total_processed = 0
+        while True:
+            window_start = last_sync_end
+            window_end = window_start + timedelta(minutes=WINDOW_SIZE_MINUTES)
+            
+            if window_end > datetime.utcnow():
+                logger.info(f"[{entity_name}] Reached current time, stopping")
+                break
+            
+            count = await process_window(token, window_start, window_end, entity_name, attributes)
+            total_processed += count
+            last_sync_end = window_end
+            
+            if not BACKLOG_MODE:
+                logger.info(f"[{entity_name}] Continuous mode: processed one window, exiting")
+                break
+        
+        logger.info(f"[{entity_name}] Processing completed. Total audits: {total_processed}")
+    
     connection.close()
-    
-    # Override start time if provided
-    if OVERRIDE_START_TIME:
-        try:
-            last_sync_end = datetime.fromisoformat(OVERRIDE_START_TIME)
-            logger.info(f"Override start time: {last_sync_end.isoformat()}")
-        except ValueError:
-            logger.warning(f"Invalid OVERRIDE_START_TIME: {OVERRIDE_START_TIME}")
-    
-    # Process windows
-    total_processed = 0
-    while True:
-        window_start = last_sync_end
-        window_end = window_start + timedelta(minutes=WINDOW_SIZE_MINUTES)
-        
-        if window_end > datetime.utcnow():
-            logger.info(f"[{ENTITY_TYPE}] Reached current time, stopping")
-            break
-        
-        count = await process_window(token, window_start, window_end)
-        total_processed += count
-        last_sync_end = window_end
-        
-        if not BACKLOG_MODE:
-            logger.info(f"[{ENTITY_TYPE}] Continuous mode: processed one window, exiting")
-            break
-    
-    logger.info(f"[{ENTITY_TYPE}] Processing completed. Total audits: {total_processed}")
 
 
 if __name__ == "__main__":

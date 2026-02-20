@@ -1,0 +1,35 @@
+{
+  "windowSizeMinutes": {
+    "backlog": 60,
+    "continuous": 10
+  },
+  "entities": [
+    {
+      "name": "Account",
+      "attributes": [
+        "name",
+        "telephone1",
+        "address1_city",
+        "address1_country"
+      ]
+    },
+    {
+      "name": "Contact",
+      "attributes": [
+        "fullname",
+        "emailaddress1",
+        "mobilephone",
+        "address1_city"
+      ]
+    },
+    {
+      "name": "Case",
+      "attributes": [
+        "title",
+        "description",
+        "prioritycode",
+        "statuscode"
+      ]
+    }
+  ]
+}

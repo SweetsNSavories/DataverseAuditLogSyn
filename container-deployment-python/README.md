@@ -2,6 +2,55 @@
 
 Bulk historical audit sync to Snowflake. Processes 60-minute time windows in parallel Docker containers, one per entity (Account, Contact, Case).
 
+## Configuration
+
+### config.json - Fully Customizable
+
+Edit `config.json` to control:
+- **Window sizes** (backlog vs continuous)
+- **Entities** to process
+- **Attributes** to track per entity
+
+Example `config.json`:
+
+```json
+{
+  "windowSizeMinutes": {
+    "backlog": 60,
+    "continuous": 10
+  },
+  "entities": [
+    {
+      "name": "Account",
+      "attributes": ["name", "telephone1", "address1_city", "address1_country"]
+    },
+    {
+      "name": "Contact",
+      "attributes": ["fullname", "emailaddress1", "mobilephone"]
+    },
+    {
+      "name": "Case",
+      "attributes": ["title", "description", "prioritycode"]
+    }
+  ]
+}
+```
+
+### Environment Variables
+
+Override or supplement config.json:
+
+```bash
+# Process only one entity (even if config.json has multiple)
+ENTITY=Account
+
+# Use backlog 60-min windows
+BACKLOG_MODE=true
+
+# Restart from specific time
+OVERRIDE_START_TIME=2026-02-01T00:00:00Z
+```
+
 ## Prerequisites
 
 - Docker & Docker Compose
@@ -42,23 +91,6 @@ CREATE INDEX IF NOT EXISTS idx_entity_time ON AUDITS(ENTITY, CREATED_AT);
 CREATE INDEX IF NOT EXISTS idx_run_id ON AUDITS(RUN_ID);
 ```
 
-## Configuration
-
-Create `.env` file in this directory:
-
-```bash
-# Dataverse
-DATAVERSE_ORG_URL=https://yourorg.crm.dynamics.com
-CLIENT_ID=your-app-registration-client-id
-CLIENT_SECRET=your-app-registration-client-secret
-
-# Snowflake
-SNOWFLAKE_USER=your-snowflake-user
-SNOWFLAKE_PASSWORD=your-snowflake-password
-SNOWFLAKE_ACCOUNT=xy12345.us-east-1
-SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-```
-
 ## Local Development
 
 ### Run Locally (Docker Compose)
@@ -77,10 +109,35 @@ docker-compose logs -f
 docker-compose down
 ```
 
+### Customize for Your Entities
+
+1. Edit `config.json`:
+   ```json
+   {
+     "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+     "entities": [
+       {
+         "name": "Lead",
+         "attributes": ["firstname", "lastname", "emailaddress1"]
+       },
+       {
+         "name": "Opportunity",
+         "attributes": ["name", "value", "stagecode"]
+       }
+     ]
+   }
+   ```
+
+2. Restart containers:
+   ```bash
+   docker-compose down
+   docker-compose up -d
+   ```
+
 ### Run Specific Entity
 
 ```bash
-docker run -e ENTITY=Account -e DATAVERSE_ORG_URL=... container-deployment-python
+docker run -e ENTITY=Account -e DATAVERSE_ORG_URL=... dataverse-audit-sync
 ```
 
 ## Azure Deployment
@@ -182,6 +239,11 @@ docker logs account-audit-processor
 - Check audit data exists in Dataverse for time range
 - Review logs for filter errors
 
+### Custom attributes not working
+- Verify attributes exist in Dataverse entity
+- Check attribute names in `config.json` are exact (case-sensitive)
+- View logs: `docker logs <container>`
+
 ## Recovery
 
 If container crashes mid-window:
@@ -190,6 +252,55 @@ If container crashes mid-window:
 3. Reprocesses the same 60-minute window (idempotent via upsert)
 4. No data loss, no duplicates
 
+## Configuration Examples
+
+### Add Custom Entity
+
+Edit `config.json`:
+
+```json
+{
+  "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+  "entities": [
+    {
+      "name": "Lead",
+      "attributes": ["firstname", "lastname", "emailaddress1", "phonenumber"]
+    }
+  ]
+}
+```
+
+### Faster Backlog Processing
+
+Increase window size (fewer but larger windows):
+
+```json
+{
+  "windowSizeMinutes": {"backlog": 180, "continuous": 10}
+}
+```
+
+### Track More Attributes
+
+```json
+{
+  "entities": [
+    {
+      "name": "Account",
+      "attributes": [
+        "name",
+        "telephone1",
+        "address1_city",
+        "address1_country",
+        "revenue",
+        "industrycode",
+        "employees"
+      ]
+    }
+  ]
+}
+```
+
 ## Next Phase
 
-Once backlog is complete (1-2 weeks), deploy **function-app-deployment** for continuous 10-minute sync.
+Once backlog is complete (1-2 weeks), deploy **function-app-deployment-python** for continuous 10-minute sync.

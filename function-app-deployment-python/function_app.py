@@ -3,16 +3,19 @@
 Dataverse Audit Sync - Continuous Phase (Python)
 Azure Functions timer-triggered function
 Runs every 10 minutes to capture new audits to Snowflake
+
+Configuration: Load from config.json, override with environment variables
 """
 
 import os
+import sys
 import json
 import logging
 import asyncio
 import aiohttp
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import azure.functions as func
 import snowflake.connector
 from snowflake.connector import DictCursor
@@ -20,6 +23,38 @@ import msal
 
 # Configure logging
 logger = logging.getLogger("AuditSyncTimer")
+
+# ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_config() -> Dict:
+    """Load configuration from config.json"""
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            logger.info(f"Loaded config from {config_path}")
+    except FileNotFoundError:
+        logger.warning(f"config.json not found, using defaults")
+        config = {
+            "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+            "entities": [
+                {"name": "Account", "attributes": ["name", "telephone1", "address1_city"]},
+                {"name": "Contact", "attributes": ["fullname", "emailaddress1", "mobilephone"]},
+                {"name": "Case", "attributes": ["title", "description", "prioritycode"]}
+            ]
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in config.json: {e}")
+        config = {
+            "windowSizeMinutes": {"backlog": 60, "continuous": 10},
+            "entities": []
+        }
+    
+    return config
+
 
 # Environment variables
 DATAVERSE_ORG_URL = os.getenv("DATAVERSE_ORG_URL", "https://yourorg.crm.dynamics.com")
@@ -31,7 +66,9 @@ SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
 SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
 
-WINDOW_SIZE_MINUTES = 10
+# Load configuration
+CONFIG = load_config()
+WINDOW_SIZE_MINUTES = CONFIG["windowSizeMinutes"]["continuous"]
 
 
 async def get_dataverse_token() -> str:
@@ -128,7 +165,8 @@ async def fetch_audits(
 async def fetch_audit_details_with_retry(
     session: aiohttp.ClientSession,
     token: str,
-    audit_id: str
+    audit_id: str,
+    attributes: List[str]
 ) -> Optional[Dict]:
     """Fetch audit details with retry"""
     headers = {
@@ -138,7 +176,7 @@ async def fetch_audit_details_with_retry(
     
     payload = {
         "auditId": audit_id,
-        "propertySet": ["name", "telephone1", "address1_city"]
+        "propertySet": attributes
     }
     
     url = f"{DATAVERSE_ORG_URL}/api/data/v9.2/RetrieveAuditDetails"
@@ -158,8 +196,9 @@ async def fetch_audit_details_with_retry(
     return None
 
 
-async def process_entity(token: str, entity: str):
+async def process_entity(token: str, entity: str, attributes: List[str]):
     """Process single entity"""
+    logger.info(f"[{entity}] Processing with attributes: {attributes}")
     connection = get_snowflake_connection()
     
     try:
@@ -182,7 +221,7 @@ async def process_entity(token: str, entity: str):
             audit_details = []
             for i in range(0, len(audit_ids), 5):
                 batch = audit_ids[i:i+5]
-                tasks = [fetch_audit_details_with_retry(session, token, aid) for aid in batch]
+                tasks = [fetch_audit_details_with_retry(session, token, aid, attributes) for aid in batch]
                 results = await asyncio.gather(*tasks)
                 audit_details.extend([r for r in results if r])
                 await asyncio.sleep(0.1)
@@ -233,12 +272,24 @@ def main(mytimer: func.TimerRequest) -> None:
 
 
 async def async_main():
-    """Async main"""
-    token = await get_dataverse_token()
-    
-    entities = ["Account", "Contact", "Case"]
-    for entity in entities:
-        await process_entity(token, entity)
+    """Async main - process all configured entities"""
+    try:
+        token = await get_dataverse_token()
+        logger.info("OAuth token acquired")
+        
+        # Process all entities from config
+        entities_to_process = CONFIG["entities"]
+        logger.info(f"Processing {len(entities_to_process)} entities from config")
+        
+        for entity_config in entities_to_process:
+            entity_name = entity_config["name"]
+            attributes = entity_config["attributes"]
+            await process_entity(token, entity_name, attributes)
+        
+        logger.info("All entities processed")
+    except Exception as e:
+        logger.error(f"Error in async_main: {e}")
+        raise
 
 
 # For local testing
