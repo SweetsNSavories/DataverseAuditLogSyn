@@ -24,7 +24,7 @@ This document is the deep-dive companion to the [TechCommunity blog post](../doc
   - [Change the cadence](#change-the-cadence)
   - [Run it somewhere](#run-it-somewhere)
   - [Hook it into observability](#hook-it-into-observability)
-- [Things to be honest about](#things-to-be-honest-about)
+- [Operational responsibilities](#operational-responsibilities)
 - [Where to read next](#where-to-read-next)
 
 ---
@@ -358,17 +358,17 @@ Neither requires application changes; both should exist before you let the pipel
 
 ---
 
-## Things to be honest about
+## Operational responsibilities
 
-Because this is a "build it yourself" pattern, here are the trade-offs you take on. These are not flaws — they are the price of doing the export yourself instead of standing up a managed pipeline, and you should price them in before you adopt it:
+A self-hosted export shifts a defined set of responsibilities from the platform vendor to the operating team. These should be assigned and resourced before adoption:
 
-1. **You own the watermark.** If the destination is wiped without the state container, the next run will start over from whatever seed timestamp you give it (usually the earliest `createdon` in the audit table for first runs, or your last known `lastSyncEnd` for resumes). Treat the state container as production data — back it up.
-2. **Schema is your problem.** When Dataverse adds a new field to the `audit` table, the change applies in production. Your sink will keep working — the field just shows up in the JSON blob — but if you're projecting columns (e.g., the attribute allow-list in `config.json`), update the config.
-3. **Permissions are your problem.** The application user needs read on `audit` (and `RetrieveAuditDetails` privileges per entity). The Power Platform admin centre handles this, but it's an out-of-band step — and it's the failure mode most often missed during initial setup. If a new entity is added to `config.json` and the app user doesn't have read on it, you'll see 401/403s in the orchestrator log for that entity only; the rest will keep running.
-4. **Cost shape changes.** You're trading "Dataverse storage entitlement" for "ADLS bytes," "Cosmos RUs," or "Snowflake credits." Run the math on your record volume before committing — partitioned Parquet on cool/cold object storage is usually the cheapest by an order of magnitude when the archive is read rarely. Cosmos is the most expensive per-row of the supplied sinks but the cheapest to query operationally; pick the destination based on how the archive will actually be consumed, not on what's familiar.
-5. **Auditing your auditor.** If this pipeline becomes evidence in a compliance investigation, the *pipeline itself* needs an audit trail. The reference implementation stamps every output document with a `runId` (UUID per window) and a `processedAt` timestamp. Keep the orchestrator logs — ideally in a tamper-evident store — for at least the same retention period as the archived audit data itself.
-6. **State drift between source and sink.** If someone manually deletes rows from the destination (or the destination is partially restored from backup), the orchestrator has no way to detect that and re-archive the missing rows. The watermark only knows "the last window I successfully wrote"; it does not reconcile against what's actually present. If you need that property, add a periodic reconciliation job that compares row counts per window between source and sink — it's outside the scope of the orchestrator itself.
-7. **It is not a Microsoft product.** Repeating this because it matters: if you adopt it, you own the operations, the upgrades, and the on-call pager. Microsoft Support will not troubleshoot this pipeline for you. The supported alternative for the audit table is the [Delta Lake profile of Azure Synapse Link for Dataverse](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link); evaluate it first.
+1. **Watermark integrity.** The state container is the system of record for resumability. If it is lost, the next run restarts from whatever seed timestamp is configured (typically the earliest `createdon` in the audit table, or the last known `lastSyncEnd`). Back it up on the same cadence as production data.
+2. **Schema evolution.** When Dataverse adds a field to the `audit` table, the sink continues to function — the field surfaces in the JSON payload. Configurations that project columns (for example, the per-entity attribute allow-list in `config.json`) must be updated explicitly.
+3. **Permission management.** The application user requires read on `audit` and `RetrieveAuditDetails` privileges per entity. This is configured in the Power Platform admin centre and is the failure mode most often missed at setup. A missing per-entity privilege surfaces as 401/403 responses scoped to that entity in the orchestrator log; other entities continue to process.
+4. **Cost reallocation.** The pattern substitutes Dataverse storage entitlement for destination cost — ADLS bytes, Cosmos RUs, or Snowflake credits. Model the per-record cost against expected volume before committing. Partitioned Parquet on cool or cold object storage is typically the lowest cost when the archive is read infrequently; Cosmos carries the highest per-row write cost of the supplied sinks but the lowest operational cost to query. Select the destination based on how the archive will actually be consumed.
+5. **Pipeline auditability.** When the archive becomes evidence in a compliance investigation, the export pipeline itself must produce an audit trail. The reference implementation stamps every output document with a per-window `runId` (UUID) and a `processedAt` timestamp. Retain orchestrator logs — ideally in a tamper-evident store — for at least the retention period of the archived data.
+6. **Source-to-sink reconciliation.** The orchestrator advances its watermark on successful writes; it does not verify that previously written rows are still present at the destination. Manual deletions, partial restores from backup, or destination-side data loss will not trigger re-archival. Where that property is required, run a periodic reconciliation job that compares per-window row counts between source and sink. It is out of scope for the orchestrator.
+7. **Support model.** This is a reference implementation under MIT and is not a Microsoft product. Microsoft Support will not troubleshoot it. The supported alternative for the `audit` table is the [Delta Lake profile of Azure Synapse Link for Dataverse](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link); evaluate it first.
 
 ---
 

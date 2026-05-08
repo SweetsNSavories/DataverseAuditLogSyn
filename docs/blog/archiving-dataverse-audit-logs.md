@@ -21,7 +21,7 @@ That combination makes the audit table the single most useful Dataverse table fo
 - "Why did this opportunity status change in Q3 of 2022?" forensic queries (years after the fact)
 - Internal analytics on user behaviour and process adoption
 
-It's also the table that grows the fastest. The Dataverse retention default is 90 days, but in practice many enterprises change that — they set it to several years, or to *never delete* — because nobody wants to be the admin who threw away evidence. The result, often after a quiet five or seven years, is an audit table sitting on tens of GB to multiple TB of capacity, dominating the entitlement bill, and never touched in normal operations.
+It's also the table that grows the fastest. The Dataverse default retention is 90 days, but in practice many enterprises extend that to several years — or set it to *never delete* — to retain evidence for compliance and forensic review. The result, often after five to seven years, is an audit table holding tens of GB to multiple TB of capacity, dominating the entitlement bill, and rarely accessed in normal operations.
 
 At that point the storage conversation becomes unavoidable. The realistic choices are:
 
@@ -178,8 +178,8 @@ The useful operational signal is not the absolute throughput — it's that the t
 
 The code that backs this post lives at <https://github.com/SweetsNSavories/DataverseAuditLogSyn> under MIT, with no warranty. The `unified-deployment` folder is the version this post describes — single Python codebase, swap sinks via `config.json`, runs locally / in a container / as an Azure Function.
 
-If you want the implementation depth this post deliberately leaves out — exact API shapes, watermark math, partial-failure drill, sink-author checklist, hosting variants, observability hooks, and the **honest list of trade-offs you take on by running this yourself instead of using a managed pipeline** — it all lives in one place:
+If you want the implementation depth this post deliberately leaves out — exact API shapes, watermark math, partial-failure drill, sink-author checklist, hosting variants, observability hooks, and the full list of operational responsibilities a self-hosted export carries — it all lives in one place:
 
 - [**unified-deployment/DESIGN.md**](https://github.com/SweetsNSavories/DataverseAuditLogSyn/blob/main/unified-deployment/DESIGN.md)
 
-If something feels wrong for your environment, change it — that's the whole point of publishing it. Comments, forks, and "this is wrong because…" PRs welcome.
+Issues, forks, and pull requests welcome via the repo.
