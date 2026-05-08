@@ -4,7 +4,7 @@
 >
 > The specific gap this post addresses is the **`audit` table**. Synapse Link / Fabric Link can replicate audit *header* rows like any other table, but the per-change payload returned by `RetrieveAuditDetails` (old value vs new value, attribute mask, related-record diffs) is computed by Dataverse on demand and is not part of the table contents the link replicates. So if your need is "keep the row-level *what changed* evidence after I prune from Dataverse", you need to call `RetrieveAuditDetails` while the source row still exists — which is what this pattern does.
 >
-> The audience this is written for: enterprises with years of accumulated audit history, no Snowflake or Synapse already in the picture, and a need for a defensible cold archive in their own Azure subscription *before* Dataverse's audit-deletion job runs. Treat this as a reference implementation you can adapt, fork, or discard.
+> The audience this is written for: enterprises with years of accumulated audit history that, for whatever reason, *couldn't* adopt Synapse Link / Fabric Link — typically because their analytics platform of record sits outside Azure (most commonly Snowflake), or because internal review hasn't approved the link in their tenant — and who need a defensible cold archive *before* Dataverse's audit-deletion job runs. Treat this as a reference implementation you can adapt, fork, or discard.
 
 ---
 
@@ -29,8 +29,6 @@ At that point the storage conversation becomes unavoidable. The realistic choice
 2. **Move the cold tail somewhere cheaper that you control, then let Dataverse's audit-deletion job reclaim the space.** The hot months stay in Dataverse where users expect them; the years of historical evidence live in your own storage account, queryable when you need them.
 
 This pattern is for option 2 — specifically, for the *one-time bulk export of multi-year history*, with the option to keep a slow trickle running afterwards if you want to top up.
-
-A crucial point that often gets lost: this pipeline does not need to run live. It is perfectly reasonable to be deliberately months or years behind real-time. The goal is to get a defensible copy of *cold* data out — the rows you are about to allow Dataverse to delete — not to mirror the audit feed in real time.
 
 A crucial point that often gets lost: this pipeline does not need to run live. It is perfectly reasonable to be deliberately months or years behind real-time. The goal is to get a defensible copy of *cold* data out — the rows you are about to allow Dataverse to delete — not to mirror the audit feed in real time.
 
@@ -116,23 +114,22 @@ This single change is the difference between "best effort" and "exactly-once-eff
 
 ## Choosing where it lands
 
-For the multi-year archive use case the practical Azure-native choices are two, depending on whether you want operational lookups or cheap analytics:
+The orchestrator is sink-agnostic — it talks to a single `AuditSink` interface (`get_state`, `update_state`, `write_audits`) and the destination is a config switch, not a code change. The reference implementation ships with four production-shaped sinks plus a no-op for testing. None of them is *the* answer; they map to platforms enterprises already operate:
 
 | Sink                    | When to consider it                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
-| **Azure Cosmos DB (NoSQL API)** | Operational lookups — "show me everything user X did to record Y in 2022" in milliseconds. Hierarchical partition keys (`/entity` + `/auditYearMonth`) keep partitions small as the archive grows over years. Document TTL doubles as the retention policy if you ever need one. Serverless mode is well-suited to a slow-trickle archive workload. |
-| **Azure Data Lake Storage Gen2 (Parquet)** | The cheap-cold-storage option. Years of audit history land as partitioned Parquet files (`entity=…/year=…/month=…/`), accessible from Fabric notebooks, Synapse Serverless SQL, Databricks, or any Parquet reader. Costs scale with bytes, not with throughput — ideal when the archive is rarely queried but must exist. |
-
-If your environment already standardises on **Microsoft Fabric**, the same Parquet sink targets [OneLake](https://learn.microsoft.com/fabric/onelake/onelake-overview) directly — the files land inside a Lakehouse and are immediately queryable from a Fabric SQL endpoint, notebooks, and Power BI without further plumbing.
-
-The orchestrator is sink-agnostic — it talks to a single `AuditSink` interface (`get_state`, `update_state`, `write_audits`). The reference repo also includes a Snowflake sink (for teams who already operate one) and a no-op sink for first-day connectivity testing, but those are intentionally not the headline choices for this archive scenario.
+| **Azure Cosmos DB (NoSQL API)** | Operational lookups — "show me everything user X did to record Y in 2022" in milliseconds. Hierarchical partition keys (`/entity` + `/auditYearMonth`) keep partitions small as the archive grows over years. Document TTL doubles as a retention policy if you want one. Serverless mode suits a slow-trickle archive workload. |
+| **Azure Data Lake Storage Gen2 (Parquet)** | The cheap-cold-storage option. Years of audit history land as partitioned Parquet files (`entity=…/year=…/month=…/`), readable from Fabric notebooks, Synapse Serverless SQL, Databricks, or any Parquet engine. Costs scale with bytes, not throughput — ideal when the archive is rarely queried but must exist. |
+| **OneLake (Parquet)**   | Same Parquet shape as ADLS, but landed inside a [Microsoft Fabric](https://learn.microsoft.com/fabric/onelake/onelake-overview) Lakehouse. Immediately queryable from a Fabric SQL endpoint, notebooks, and Power BI without further plumbing. The natural choice if your downstream BI is Fabric. |
+| **Snowflake (MERGE INTO)** | The natural choice when Snowflake is already the analytics platform of record and adding a separate Microsoft analytics estate just for audit data isn't on the table. `MERGE INTO ... ON audit_id` keeps the same idempotency contract as the Cosmos upsert, and the warehouse stays paused between archival batches. |
+| **No-op (logs only)**   | First-day connectivity testing. Confirms the Dataverse side works before you provision any storage. |
 
 A reasonable default split many enterprises arrive at:
 
-- **ADLS Gen2 / OneLake** holds the durable historical archive — cheap, partitioned, queryable when (rarely) needed.
+- **ADLS Gen2 / OneLake** (or **Snowflake**, if that's your platform) holds the durable historical archive — cheap, partitioned, queryable when (rarely) needed.
 - **Cosmos DB** holds the most recent N months for fast operational lookup if there is a use case for it; otherwise skip it entirely.
 
-Adding a sink for storage you already own (e.g., an existing data lake on a different platform) is roughly 100 lines of Python and one factory entry.
+Adding a sink for storage you already own (e.g., BigQuery, Redshift, on-prem object storage) is roughly 100 lines of Python and one factory entry.
 
 ---
 
@@ -162,7 +159,7 @@ In a sandbox tenant with synthetic data, a 90-day backlog across half a dozen en
 - The shape of `RetrieveAuditDetails` calls (more changed attributes per row = more bytes per call)
 - Dataverse Web API rate limits applicable to your environment
 - Concurrency you allow (`max_concurrent_entities` in the config)
-- Sink throughput (Cosmos serverless RU autoscale, ADLS upload bandwidth)
+- Sink throughput (Cosmos serverless RU autoscale, ADLS upload bandwidth, Snowflake warehouse size)
 
 The useful operational signal is not the absolute throughput — it's that the throughput is *stable* and the per-window log lines tick predictably. If they don't, look at lag, sink errors, or 429 responses from Dataverse before scaling up concurrency.
 
@@ -177,7 +174,7 @@ Because this is a "build it yourself" pattern, here are the trade-offs you take 
 1. **You own the watermark.** If the destination is wiped without the state container, the next run will start over from whatever seed timestamp you give it (usually the earliest `createdon` in the audit table for first runs, or your last known `lastSyncEnd` for resumes). Treat the state container as production data — back it up.
 2. **Schema is your problem.** When Dataverse adds a new field to the `audit` table, the change applies in production. Your sink will keep working — the field just shows up in the JSON blob — but if you're projecting columns (e.g., the attribute allow-list), update the config.
 3. **Permissions are your problem.** The application user needs read on `audit` (and `RetrieveAuditDetails` privileges per entity). The Power Platform admin centre handles this, but it's an out-of-band step.
-4. **Cost shape changes.** You're trading "Dataverse storage entitlement" for "ADLS bytes" or "Cosmos RUs." Run the math on your record volume before committing — ADLS Gen2 cool/cold tiers are usually the cheapest by an order of magnitude when the archive is read rarely.
+4. **Cost shape changes.** You're trading "Dataverse storage entitlement" for "ADLS bytes," "Cosmos RUs," or "Snowflake credits." Run the math on your record volume before committing — partitioned Parquet on cool/cold object storage is usually the cheapest by an order of magnitude when the archive is read rarely.
 5. **Auditing your auditor.** If this pipeline becomes evidence in a compliance investigation, the *pipeline itself* needs an audit trail. The reference implementation stamps every output document with a `runId` (UUID per window) and a `processedAt` timestamp. Keep the orchestrator logs.
 6. **It is not a Microsoft product.** I'll repeat this because it matters: if you adopt it, you own the operations, the upgrades, and the on-call pager.
 
@@ -190,7 +187,7 @@ Because this is a "build it yourself" pattern, here are the trade-offs you take 
 - You have multiple years of accumulated audit history in Dataverse and need to move the cold tail off the platform before pruning to reclaim entitlement.
 - The evidence you actually care about is the `RetrieveAuditDetails` payload (old value → new value), not just the audit header row — so a table-level replicator alone wouldn't preserve what you need.
 - You're comfortable running this as a *batch job* — once for the historical backfill, then perhaps quarterly or annually to top up — rather than as a live continuous feed. Being deliberately months or years behind real-time is fine and often desirable.
-- You want a portable, scriptable export that targets storage you already own in your Azure subscription (ADLS Gen2, OneLake, or Cosmos DB).
+- You want a portable, scriptable export that targets storage you already own — your Azure subscription (ADLS Gen2, OneLake, Cosmos DB), your Snowflake account, or another platform you can write a thin sink for.
 - You want field-level control over which attributes leave the platform — useful when audit details contain regulated data.
 
 **Not a good fit:**
@@ -221,6 +218,6 @@ A 30-minute read end-to-end. If something feels wrong for your environment, chan
 
 For most Dataverse-to-Azure replication needs, Synapse Link / Fabric Link is the right starting point and you should evaluate them first. The narrower problem this pattern solves is the audit table specifically — where the evidence you usually care about (the `RetrieveAuditDetails` diff) lives outside what a table-level replicator carries, and where the most common business trigger is *"we have years of audit data, we've never deleted any of it, and the storage bill is now a problem."*
 
-If that's where you're sitting — multi-year backlog, no Synapse / Snowflake estate already in play, looking for a defensible way to move the cold tail to your own Azure storage *before* you let Dataverse prune anything — this is one option among several. Adopt it, adapt it, or use it as the "here's the shape of the problem" sketch when you talk to your platform team about doing something more substantial.
+If that's where you're sitting — multi-year backlog, Synapse Link / Fabric Link not on the table for whatever reason (often because your analytics platform of record is Snowflake or otherwise outside Azure), looking for a defensible way to move the cold tail to storage you already own *before* you let Dataverse prune anything — this is one option among several. Adopt it, adapt it, or use it as the "here's the shape of the problem" sketch when you talk to your platform team about doing something more substantial.
 
 Comments, forks, and "this is wrong because…" PRs welcome.
