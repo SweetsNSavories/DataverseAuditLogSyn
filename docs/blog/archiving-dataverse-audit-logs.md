@@ -153,19 +153,6 @@ The useful operational signal is not the absolute throughput — it's that the t
 
 ---
 
-## Things to be honest about
-
-Because this is a "build it yourself" pattern, here are the trade-offs you take on. These are not flaws — they are the price of doing the export yourself instead of standing up a managed pipeline, and you should price them in:
-
-1. **You own the watermark.** If the destination is wiped without the state container, the next run will start over from whatever seed timestamp you give it (usually the earliest `createdon` in the audit table for first runs, or your last known `lastSyncEnd` for resumes). Treat the state container as production data — back it up.
-2. **Schema is your problem.** When Dataverse adds a new field to the `audit` table, the change applies in production. Your sink will keep working — the field just shows up in the JSON blob — but if you're projecting columns (e.g., the attribute allow-list), update the config.
-3. **Permissions are your problem.** The application user needs read on `audit` (and `RetrieveAuditDetails` privileges per entity). The Power Platform admin centre handles this, but it's an out-of-band step.
-4. **Cost shape changes.** You're trading "Dataverse storage entitlement" for "ADLS bytes," "Cosmos RUs," or "Snowflake credits." Run the math on your record volume before committing — partitioned Parquet on cool/cold object storage is usually the cheapest by an order of magnitude when the archive is read rarely.
-5. **Auditing your auditor.** If this pipeline becomes evidence in a compliance investigation, the *pipeline itself* needs an audit trail. The reference implementation stamps every output document with a `runId` (UUID per window) and a `processedAt` timestamp. Keep the orchestrator logs.
-6. **It is not a Microsoft product.** I'll repeat this because it matters: if you adopt it, you own the operations, the upgrades, and the on-call pager.
-
----
-
 ## When to reach for it (and when not to)
 
 **Reasonable fit:**
@@ -191,18 +178,8 @@ Because this is a "build it yourself" pattern, here are the trade-offs you take 
 
 The code that backs this post lives at <https://github.com/SweetsNSavories/DataverseAuditLogSyn> under MIT, with no warranty. The `unified-deployment` folder is the version this post describes — single Python codebase, swap sinks via `config.json`, runs locally / in a container / as an Azure Function.
 
-If you want the implementation depth this post deliberately leaves out — exact API shapes, watermark math, partial-failure drill, sink-author checklist, hosting variants, observability hooks — it all lives in one place:
+If you want the implementation depth this post deliberately leaves out — exact API shapes, watermark math, partial-failure drill, sink-author checklist, hosting variants, observability hooks, and the **honest list of trade-offs you take on by running this yourself instead of using a managed pipeline** — it all lives in one place:
 
 - [**unified-deployment/DESIGN.md**](https://github.com/SweetsNSavories/DataverseAuditLogSyn/blob/main/unified-deployment/DESIGN.md)
 
-If something feels wrong for your environment, change it — that's the whole point of publishing it.
-
----
-
-## Closing
-
-For most Dataverse-to-Azure replication needs, [Azure Synapse Link](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-synapse) and [Fabric Link](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-view-in-fabric) are the right starting point and you should evaluate them first — and that now includes the audit table itself, via the [Delta Lake profile](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link). The narrower problem this pattern solves is everything that sits *outside* that supported path: the destination is Snowflake or some other non-Azure system, the link can't be run in the tenant, you want the decoded `RetrieveAuditDetails` payload landing already-parsed rather than a packed `changedata` column the consumer has to decode, or the most common business trigger of all — *"we have years of audit data, we've never deleted any of it, and the storage bill is now a problem."*
-
-If that's where you're sitting — multi-year backlog, Synapse Link not on the table for whatever reason, looking for a defensible way to move the cold tail to storage you already own *before* you let Dataverse prune anything — this is one option among several. Adopt it, adapt it, or use it as the "here's the shape of the problem" sketch when you talk to your platform team about doing something more substantial.
-
-Comments, forks, and "this is wrong because…" PRs welcome.
+If something feels wrong for your environment, change it — that's the whole point of publishing it. Comments, forks, and "this is wrong because…" PRs welcome.

@@ -24,6 +24,8 @@ This document is the deep-dive companion to the [TechCommunity blog post](../doc
   - [Change the cadence](#change-the-cadence)
   - [Run it somewhere](#run-it-somewhere)
   - [Hook it into observability](#hook-it-into-observability)
+- [Things to be honest about](#things-to-be-honest-about)
+- [Where to read next](#where-to-read-next)
 
 ---
 
@@ -353,6 +355,20 @@ The orchestrator emits structured logs by default. Two integrations that pay for
 - **A simple dashboard query against the state container** — `SELECT entity, lastSyncEnd, recordCount FROM sync_state` (or the equivalent for your sink). When `lastSyncEnd` for any entity stops advancing, you have an incident; when `recordCount` flatlines, you have either a quiet tenant or a silent failure — cross-check with the source.
 
 Neither requires application changes; both should exist before you let the pipeline run unattended.
+
+---
+
+## Things to be honest about
+
+Because this is a "build it yourself" pattern, here are the trade-offs you take on. These are not flaws — they are the price of doing the export yourself instead of standing up a managed pipeline, and you should price them in before you adopt it:
+
+1. **You own the watermark.** If the destination is wiped without the state container, the next run will start over from whatever seed timestamp you give it (usually the earliest `createdon` in the audit table for first runs, or your last known `lastSyncEnd` for resumes). Treat the state container as production data — back it up.
+2. **Schema is your problem.** When Dataverse adds a new field to the `audit` table, the change applies in production. Your sink will keep working — the field just shows up in the JSON blob — but if you're projecting columns (e.g., the attribute allow-list in `config.json`), update the config.
+3. **Permissions are your problem.** The application user needs read on `audit` (and `RetrieveAuditDetails` privileges per entity). The Power Platform admin centre handles this, but it's an out-of-band step — and it's the failure mode most often missed during initial setup. If a new entity is added to `config.json` and the app user doesn't have read on it, you'll see 401/403s in the orchestrator log for that entity only; the rest will keep running.
+4. **Cost shape changes.** You're trading "Dataverse storage entitlement" for "ADLS bytes," "Cosmos RUs," or "Snowflake credits." Run the math on your record volume before committing — partitioned Parquet on cool/cold object storage is usually the cheapest by an order of magnitude when the archive is read rarely. Cosmos is the most expensive per-row of the supplied sinks but the cheapest to query operationally; pick the destination based on how the archive will actually be consumed, not on what's familiar.
+5. **Auditing your auditor.** If this pipeline becomes evidence in a compliance investigation, the *pipeline itself* needs an audit trail. The reference implementation stamps every output document with a `runId` (UUID per window) and a `processedAt` timestamp. Keep the orchestrator logs — ideally in a tamper-evident store — for at least the same retention period as the archived audit data itself.
+6. **State drift between source and sink.** If someone manually deletes rows from the destination (or the destination is partially restored from backup), the orchestrator has no way to detect that and re-archive the missing rows. The watermark only knows "the last window I successfully wrote"; it does not reconcile against what's actually present. If you need that property, add a periodic reconciliation job that compares row counts per window between source and sink — it's outside the scope of the orchestrator itself.
+7. **It is not a Microsoft product.** Repeating this because it matters: if you adopt it, you own the operations, the upgrades, and the on-call pager. Microsoft Support will not troubleshoot this pipeline for you. The supported alternative for the audit table is the [Delta Lake profile of Azure Synapse Link for Dataverse](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link); evaluate it first.
 
 ---
 
