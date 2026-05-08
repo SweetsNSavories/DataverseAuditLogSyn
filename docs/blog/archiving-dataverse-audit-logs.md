@@ -2,18 +2,18 @@
 
 > **A note up-front.** This post documents an architectural choice — not a Microsoft product, not a Microsoft offering, and not officially supported. For most Dataverse-to-Azure replication needs the first-class options are [Azure Synapse Link for Dataverse](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-synapse) and [Microsoft Fabric Link for Dataverse](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-view-in-fabric); if either fits your scenario, prefer them.
 >
-> The specific gap this post addresses is the **`audit` table**. Synapse Link / Fabric Link can replicate audit *header* rows like any other table, but the per-change payload returned by `RetrieveAuditDetails` (old value vs new value, attribute mask, related-record diffs) is computed by Dataverse on demand and is not part of the table contents the link replicates. So if your need is "keep the row-level *what changed* evidence after I prune from Dataverse", you need to call `RetrieveAuditDetails` while the source row still exists — which is what this pattern does.
+> **For the audit table specifically, Synapse Link is now the first-choice answer.** In the last year or two Microsoft added explicit support for exporting the `audit` table via the [Delta Lake profile of Azure Synapse Link for Dataverse](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link) — there's even a dedicated docs page for the Power BI reporting flow on top of it. If you can run that link in your tenant, run that. This pattern is for the cases where you can't, or where what lands in the lake isn't what you actually need.
 >
-> The audience this is written for: enterprises with years of accumulated audit history that, for whatever reason, *couldn't* adopt Synapse Link / Fabric Link — typically because their analytics platform of record sits outside Azure (most commonly Snowflake), or because internal review hasn't approved the link in their tenant — and who need a defensible cold archive *before* Dataverse's audit-deletion job runs. Treat this as a reference implementation you can adapt, fork, or discard.
+> What "can't, or isn't enough" looks like in practice: (1) your analytics platform of record sits outside Azure (most commonly Snowflake) and you don't want to add Synapse + ADLS + Spark just to feed the audit table; (2) internal review hasn't approved the link in your tenant, or region/governance constraints rule it out; (3) you need the *decoded* `RetrieveAuditDetails` payload — old value, new value, attribute mask, related-record diffs — rather than the packed `changedata` column that lands in the lake unparsed; (4) you need the cold archive to *outlive* the source rows, i.e., you want to safely prune in Dataverse without losing the evidence the link would propagate the delete for. Treat this as a reference implementation you can adapt, fork, or discard.
 
 ---
 
 ## Why the audit table is special
 
-Most of what Dataverse exports through Synapse Link is *current state*. The **`audit` table** is different in two ways:
+The **`audit` table** is different from the rest of Dataverse in two ways that matter for an archive design:
 
 1. It's an immutable, append-only record of *who changed what, when, and from where* — the closest thing Dataverse has to a forensic ledger.
-2. The valuable part of an audit row is not the row itself; it's the diff (old value → new value, attribute mask, related-record context) returned by the bound `RetrieveAuditDetails` function. That diff is computed at read-time against the still-living source row. Once Dataverse deletes the audit, no API call can reconstruct it.
+2. The valuable part of an audit row is not the row itself; it's the diff (old value → new value, attribute mask, related-record context). The audit row stores that diff in a packed `changedata` column, and the bound `RetrieveAuditDetails` function is what decodes it into a structured `OldValue` / `NewValue` / `ChangedAttributes` shape your downstream tools can actually query. Synapse Link with the Delta Lake profile *will* carry the `changedata` column to the lake, but you still need a parser on the other side; this pattern calls `RetrieveAuditDetails` at archive-time so what lands in the destination is already decoded and immediately queryable.
 
 That combination makes the audit table the single most useful Dataverse table for:
 
@@ -171,15 +171,16 @@ Because this is a "build it yourself" pattern, here are the trade-offs you take 
 **Reasonable fit:**
 
 - You have multiple years of accumulated audit history in Dataverse and need to move the cold tail off the platform before pruning to reclaim entitlement.
-- The evidence you actually care about is the `RetrieveAuditDetails` payload (old value → new value), not just the audit header row — so a table-level replicator alone wouldn't preserve what you need.
+- You want the *decoded* `RetrieveAuditDetails` payload (old value → new value, attribute mask, related-record context) landing in the destination ready to query — rather than the packed `changedata` column Synapse Link delivers, which still needs a parser on the consumer side.
+- Your analytics platform of record sits outside Azure (most commonly Snowflake) and you don't want to add Synapse + ADLS + Spark to your stack just to land the audit table.
+- Synapse Link isn't an option in your tenant — region pairing, governance review, or the cost floor of running ADLS + a Spark pool 24/7 don't fit your environment.
 - You're comfortable running this as a *batch job* — once for the historical backfill, then perhaps quarterly or annually to top up — rather than as a live continuous feed. Being deliberately months or years behind real-time is fine and often desirable.
-- You want a portable, scriptable export that targets storage you already own — your Azure subscription (ADLS Gen2, OneLake, Cosmos DB), your Snowflake account, or another platform you can write a thin sink for.
 - You want field-level control over which attributes leave the platform — useful when audit details contain regulated data.
 
 **Not a good fit:**
 
+- You can run [Azure Synapse Link with the Delta Lake profile](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link) *and* you're happy parsing the packed `changedata` column on the consumer side, *and* your destination is ADLS / Synapse / Power BI. That's the supported, first-class path for the audit table — use it.
 - You only need *current state* of business tables (account, contact, opportunity). Use Synapse Link / Fabric Link — they do exactly that and you don't need this pattern.
-- You only need audit *header* rows (who/when/which table) and not the per-attribute change detail. Synapse Link / Fabric Link can replicate the audit table itself; consider that first.
 - You need sub-second freshness in the destination. The pattern's natural cadence is one window length (10 min in the reference config); for true real-time, use Dataverse webhooks or change-tracking APIs.
 - You don't have somewhere to operate a small Python container, function, or scheduled job — even an annual one.
 - You don't have an internal owner who can be paged when the schedule fails.
@@ -200,8 +201,8 @@ If something feels wrong for your environment, change it — that's the whole po
 
 ## Closing
 
-For most Dataverse-to-Azure replication needs, Synapse Link / Fabric Link is the right starting point and you should evaluate them first. The narrower problem this pattern solves is the audit table specifically — where the evidence you usually care about (the `RetrieveAuditDetails` diff) lives outside what a table-level replicator carries, and where the most common business trigger is *"we have years of audit data, we've never deleted any of it, and the storage bill is now a problem."*
+For most Dataverse-to-Azure replication needs, [Azure Synapse Link](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-synapse) and [Fabric Link](https://learn.microsoft.com/power-apps/maker/data-platform/azure-synapse-link-view-in-fabric) are the right starting point and you should evaluate them first — and that now includes the audit table itself, via the [Delta Lake profile](https://learn.microsoft.com/power-platform/admin/audit-data-azure-synapse-link). The narrower problem this pattern solves is everything that sits *outside* that supported path: the destination is Snowflake or some other non-Azure system, the link can't be run in the tenant, you want the decoded `RetrieveAuditDetails` payload landing already-parsed rather than a packed `changedata` column the consumer has to decode, or the most common business trigger of all — *"we have years of audit data, we've never deleted any of it, and the storage bill is now a problem."*
 
-If that's where you're sitting — multi-year backlog, Synapse Link / Fabric Link not on the table for whatever reason (often because your analytics platform of record is Snowflake or otherwise outside Azure), looking for a defensible way to move the cold tail to storage you already own *before* you let Dataverse prune anything — this is one option among several. Adopt it, adapt it, or use it as the "here's the shape of the problem" sketch when you talk to your platform team about doing something more substantial.
+If that's where you're sitting — multi-year backlog, Synapse Link not on the table for whatever reason, looking for a defensible way to move the cold tail to storage you already own *before* you let Dataverse prune anything — this is one option among several. Adopt it, adapt it, or use it as the "here's the shape of the problem" sketch when you talk to your platform team about doing something more substantial.
 
 Comments, forks, and "this is wrong because…" PRs welcome.
