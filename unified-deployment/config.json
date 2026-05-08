@@ -1,4 +1,40 @@
 {
+  "sink": {
+    "type": "snowflake",
+    "comment": "One of: snowflake | cosmos | adls | onelake. Snowflake is the default for backward compatibility.",
+
+    "snowflake": {
+      "timeout_seconds": 30,
+      "comment": "Connection details (account/user/password/warehouse/database/schema) come from env vars."
+    },
+
+    "cosmos": {
+      "endpoint": null,
+      "comment_endpoint": "https://<account>.documents.azure.com:443/  (or https://localhost:8081 for emulator). Set via env COSMOS_ENDPOINT.",
+      "database": "audit_db",
+      "container_audits": "audit_logs",
+      "container_state": "sync_state",
+      "auth": "aad",
+      "comment_auth": "aad => DefaultAzureCredential (managed identity / az login). Falls back to COSMOS_KEY env var if set (use only for emulator/dev).",
+      "throughput_audits": 400,
+      "ttl_days": 90,
+      "comment_ttl": "Maps to Dataverse 90-day default audit retention. Set 0 / null to disable TTL."
+    },
+
+    "adls": {
+      "target": "adls",
+      "comment_target": "adls (Azure Data Lake Storage Gen2) or onelake (Microsoft Fabric Lakehouse). OneLake auto-resolves account_url to https://onelake.dfs.fabric.microsoft.com.",
+      "account_name": null,
+      "comment_account_name": "ADLS Gen2 storage account name (without .dfs.core.windows.net). Ignored for onelake. Override via ADLS_ACCOUNT_NAME env var.",
+      "account_url": null,
+      "comment_account_url": "Optional - explicit URL beats account_name. Override via ADLS_ACCOUNT_URL env var.",
+      "filesystem": "audit-sync",
+      "comment_filesystem": "ADLS Gen2: container name. OneLake: '<workspace>/<lakehouse>.Lakehouse/Files' style path piece. Override via ADLS_FILESYSTEM env var.",
+      "root_path": "audits",
+      "comment_root_path": "Sub-folder within filesystem under which audit/ and _state/ live."
+    }
+  },
+
   "windowSizeMinutes": {
     "backlog": 60,
     "continuous": 10
@@ -10,16 +46,32 @@
   },
   "entities": [
     {
-      "name": "Account",
+      "name": "account",
       "attributes": ["name", "telephone1", "address1_city", "address1_country"]
     },
     {
-      "name": "Contact",
+      "name": "contact",
       "attributes": ["fullname", "emailaddress1", "mobilephone", "address1_city"]
     },
     {
-      "name": "Case",
+      "name": "lead",
+      "attributes": ["fullname", "subject", "statuscode", "estimatedvalue"]
+    },
+    {
+      "name": "opportunity",
+      "attributes": ["name", "estimatedvalue", "statecode", "statuscode"]
+    },
+    {
+      "name": "incident",
       "attributes": ["title", "description", "prioritycode", "statuscode"]
+    },
+    {
+      "name": "email",
+      "attributes": ["subject", "description", "from", "to", "statuscode"]
+    },
+    {
+      "name": "systemuser",
+      "attributes": ["fullname", "domainname", "isdisabled"]
     }
   ],
   "dataverse": {
@@ -30,9 +82,10 @@
       "retry_delay_seconds": 1
     },
     "auth": {
-      "authority_url": "https://login.microsoftonline.com/common",
-      "token_cache_minutes": 55,
-      "scope": "https://org.dynamics.com/.default"
+      "authority_url": "https://login.microsoftonline.com/{tenant}",
+      "comment_authority": "{tenant} placeholder is replaced with TENANT_ID env var at runtime.",
+      "scope": "{org}/.default",
+      "comment_scope": "{org} placeholder is replaced with DATAVERSE_ORG_URL env var at runtime."
     },
     "query": {
       "page_size": 5000,
@@ -77,6 +130,8 @@
     "components": {
       "dataverse": "INFO",
       "snowflake": "INFO",
+      "sink.cosmos": "INFO",
+      "sink.adls": "INFO",
       "auth": "INFO",
       "sync": "INFO"
     }

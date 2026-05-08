@@ -16,6 +16,18 @@ env/
 .env.local
 *.env
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# ----- Credential / key snapshots (never commit) -----
+cosmos-keys-snapshot.md
+*-keys-snapshot.md
+secrets/
+.secrets/
+*.key
+*.pem
+*.pfx
 
 # ----- Logs -----
 logs/

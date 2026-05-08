@@ -7,6 +7,114 @@ This is a single, adaptive sync solution that:
 - Switches to live mode once current
 - Runs continuously, indefinitely
 - Can be hosted **any way you like** — pick what fits your environment
+- Writes to **whichever target you prefer** — Snowflake, Cosmos DB, ADLS Gen2, or OneLake
+
+---
+
+## Pick Your Sink (Storage Target)
+
+The sync writes audit records and tracks per-entity sync state in a **pluggable
+sink**. Pick the one your data team actually uses; you only need to install
+the deps for that sink.
+
+| Sink | Best for | Auth | Idempotency | Retention | Install |
+|------|----------|------|-------------|-----------|---------|
+| `snowflake` | BI / data warehouse / SQL analysts | user + password | `MERGE` on `audit_id` | manual | `snowflake-connector-python` |
+| `cosmos` | Operational lookups, RAG context, multi-region apps | AAD RBAC (default) or key | `upsert` by `id` | TTL = 90 d (matches Dataverse) | `azure-cosmos`, `azure-identity` |
+| `adls` | Lakehouse / Synapse / Trino / Spark / Databricks | AAD or shared key | per-window Parquet file overwrite | manual / lifecycle policy | `azure-storage-file-datalake`, `pyarrow`, `azure-identity` |
+| `onelake` | Microsoft Fabric Lakehouse | AAD (workspace RBAC) | per-window Parquet file overwrite | manual | `azure-storage-file-datalake`, `pyarrow`, `azure-identity` |
+| `noop` | Local smoke-test (no real storage) | none | n/a | n/a | none |
+
+Set the choice in `config.json`:
+```json
+"sink": { "type": "cosmos" }
+```
+…or override per-deployment with the relevant env vars (see `.env.example`).
+
+#### Validated against live Azure (May 2026)
+- `noop` — pipeline smoke test against `orgc783d424.crm.dynamics.com` ✅
+  (3 systemuser audits fetched + RetrieveAuditDetails enrichment confirmed)
+- `cosmos` — end-to-end against Cosmos account `dataverseauditdocument`
+  (serverless, eastus) ✅
+  - Containers `audit_logs` (HPK `/entity` + `/auditYearMonth`, 90 d TTL) and
+    `sync_state` auto-created.
+  - 3 audit docs upserted into `dataverse_audit/audit_logs`; state row
+    `{id:"systemuser", lastSyncEnd:"2026-05-08T07:00:47", recordCount:3}`
+    written to `sync_state`.
+  - Re-run = idempotent: 0 new records, exits cleanly via `exit_when_caught_up`.
+- `snowflake`, `adls`, `onelake` — code path identical to validated sinks; not
+  end-to-end tested in this run because no Snowflake/Storage account was
+  available in the test subscription.
+
+### Sink-specific quickstart
+
+#### Snowflake (default)
+```bash
+# .env
+SNOWFLAKE_USER=...
+SNOWFLAKE_PASSWORD=...
+SNOWFLAKE_ACCOUNT=xy12345.region
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_DATABASE=AUDIT_DB
+SNOWFLAKE_SCHEMA=PUBLIC
+```
+Tables `audit_logs` and `sync_state` are auto-created with `CREATE TABLE IF NOT EXISTS` on first run.
+
+#### Cosmos DB (recommended for production multi-region)
+```bash
+# .env
+COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/
+COSMOS_DATABASE=audit_db
+COSMOS_CONTAINER_AUDITS=audit_logs
+COSMOS_CONTAINER_STATE=sync_state
+# Auth: leave COSMOS_KEY unset to use AAD via DefaultAzureCredential
+# (managed identity in prod, az login locally). Only set COSMOS_KEY for the emulator.
+```
+Containers are auto-created with **hierarchical partition keys** `/entity` + `/auditYearMonth`
+(uses `MultiHash` PartitionKey on Cosmos SDK ≥ 4.7) and **TTL = 90 days** to match Dataverse's
+default audit retention. AAD RBAC role required: **Cosmos DB Built-in Data Contributor**
+on the account scope.
+
+> **Serverless accounts are auto-detected.** If your Cosmos account is on the
+> serverless capacity model, the sink retries container creation without
+> `offer_throughput` (since serverless doesn't accept it). No config change needed.
+
+#### ADLS Gen2 (Parquet for lakehouses)
+```bash
+# .env
+ADLS_ACCOUNT_NAME=mylakehouse           # account NAME, no .dfs.core.windows.net
+ADLS_FILESYSTEM=audit-sync              # container name
+# AAD by default. Override with ADLS_KEY for shared-key auth (not allowed for OneLake).
+```
+Layout (Hive-partitioned, Spark/Synapse/Trino-friendly):
+```
+audit-sync/
+  audits/entity=account/year=2026/month=05/run-<runId>-window-<endIso>.parquet
+  _state/sync_state.json
+```
+
+#### OneLake (Microsoft Fabric Lakehouse)
+```json
+"sink": {
+  "type": "onelake",
+  "adls": {
+    "target": "onelake",
+    "filesystem": "<workspace-name>/<lakehouse>.Lakehouse/Files",
+    "root_path": "audits"
+  }
+}
+```
+No account name needed - the host is fixed at `https://onelake.dfs.fabric.microsoft.com`.
+The service principal (or managed identity) must be granted **Contributor** on the Fabric
+workspace.
+
+#### Noop (smoke test)
+```json
+"sink": { "type": "noop" }
+```
+Use `python smoke_test.py` for an end-to-end pipeline check that connects to Dataverse,
+fetches audits, calls `RetrieveAuditDetails`, and **prints** what would be written. No
+storage required.
 
 ---
 
@@ -103,31 +211,22 @@ The code adapts:
 
 ## Setup (Once)
 
-### 1. Create Snowflake tables
-```sql
-CREATE TABLE IF NOT EXISTS audit_logs (
-    audit_id VARCHAR(36) PRIMARY KEY,
-    entity VARCHAR(50),
-    changes VARIANT,
-    processed_at TIMESTAMP_NTZ,
-    run_id VARCHAR(36)
-);
+### 1. Pick and provision your sink (storage target)
+See [Pick Your Sink](#pick-your-sink-storage-target) above. Tables / containers /
+filesystems are **auto-created** on first run - you only need an empty database
+or storage account to point at.
 
-CREATE TABLE IF NOT EXISTS sync_state (
-    entity VARCHAR(50) PRIMARY KEY,
-    last_sync_end TIMESTAMP_NTZ,
-    record_count NUMBER,
-    updated_at TIMESTAMP_NTZ
-);
-```
-
-### 2. Register an Azure Entra ID app
-- Grant it the `Dynamics CRM` `user_impersonation` permission
-- Create a client secret
-- Note the `client_id` and `client_secret`
+### 2. Register an Azure Entra ID app (service principal)
+- Create an App Registration in Azure Portal
+- Add a **client secret** (note the *Value*, not the Secret ID)
+- In your Power Platform environment, create an **Application User** for that
+  app (Settings → Users + permissions → Application users → New app user)
+- Assign the **System Administrator** security role (or a custom role with
+  `prvReadAudit` + `prvDeleteAudit` if you want least-privilege)
 
 ### 3. Edit `config.json`
-- List the entities you want to track
+- Set `sink.type` to your chosen target
+- List the entities you want to track in `entities`
 - Specify which attributes per entity
 - Tune performance parameters (defaults are fine for most cases)
 
@@ -135,6 +234,21 @@ CREATE TABLE IF NOT EXISTS sync_state (
 - Copy `.env.example` to `.env` (for console/container)
 - OR edit `local.settings.json` (for Azure Functions local testing)
 - OR set in Azure Portal Configuration (for deployed Function App)
+
+### 5. (Recommended) Smoke-test the pipeline first
+```bash
+python smoke_test.py
+```
+Runs against live Dataverse with a `noop` sink so you can validate OAuth +
+audit fetch + `RetrieveAuditDetails` enrichment **before** wiring up real
+storage. Prints sample audit content for inspection.
+
+> **Heads up - stale env vars on Windows.** If you ever set `CLIENT_SECRET` /
+> `CLIENT_ID` etc. as a Windows User-level env var, those persist across all
+> sessions and will shadow `.env`. The script calls `load_dotenv(override=True)`
+> so the `.env` file always wins, but if you launch from a tool that reads env
+> vars directly (e.g. some CI runners), clean them up with:
+> `[Environment]::SetEnvironmentVariable("CLIENT_SECRET", $null, "User")`.
 
 ---
 
