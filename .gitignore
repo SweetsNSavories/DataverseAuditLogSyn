@@ -39,6 +39,10 @@ logs/
 *.swp
 *.swo
 
+# ----- Local scratch (never commit) -----
+.scratch/
+scratch/
+
 # ----- Azure Functions -----
 # Note: unified-deployment/local.settings.json is a template with placeholders only.
 # When you fill in real secrets, copy to local.settings.json.local (which IS ignored).
