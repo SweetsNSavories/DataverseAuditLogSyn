@@ -1,0 +1,98 @@
+{
+  "windowSizeMinutes": {
+    "backlog": 60,
+    "continuous": 10
+  },
+  "modeAutoDetect": {
+    "enabled": true,
+    "backlog_threshold_minutes": 60,
+    "comment": "If lastSyncEnd is older than backlog_threshold_minutes, use backlog window size; otherwise continuous"
+  },
+  "entities": [
+    {
+      "name": "Account",
+      "attributes": ["name", "telephone1", "address1_city", "address1_country"]
+    },
+    {
+      "name": "Contact",
+      "attributes": ["fullname", "emailaddress1", "mobilephone", "address1_city"]
+    },
+    {
+      "name": "Case",
+      "attributes": ["title", "description", "prioritycode", "statuscode"]
+    }
+  ],
+  "dataverse": {
+    "api": {
+      "version": "v9.2",
+      "timeout_seconds": 30,
+      "max_retries": 3,
+      "retry_delay_seconds": 1
+    },
+    "auth": {
+      "authority_url": "https://login.microsoftonline.com/common",
+      "token_cache_minutes": 55,
+      "scope": "https://org.dynamics.com/.default"
+    },
+    "query": {
+      "page_size": 5000,
+      "concurrent_audit_fetch": 5
+    }
+  },
+  "snowflake": {
+    "connection": {
+      "timeout_seconds": 30,
+      "max_retries": 3,
+      "retry_delay_seconds": 2
+    },
+    "query": {
+      "batch_insert_size": 100,
+      "max_pool_size": 10,
+      "min_pool_size": 1
+    }
+  },
+  "performance": {
+    "max_concurrent_entities": 3,
+    "thread_pool_size": 10,
+    "rate_limit_requests_per_second": 100,
+    "backoff_multiplier": 2.0,
+    "max_backoff_seconds": 30,
+    "sleep_between_windows_seconds": 1,
+    "sleep_when_caught_up_seconds": 60
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "[%(asctime)s] %(levelname)s [%(name)s]: %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "output": {
+      "console": true,
+      "file": {
+        "enabled": false,
+        "path": "./logs/audit-sync.log",
+        "max_size_mb": 100,
+        "backup_count": 5,
+        "level": "DEBUG"
+      }
+    },
+    "components": {
+      "dataverse": "INFO",
+      "snowflake": "INFO",
+      "auth": "INFO",
+      "sync": "INFO"
+    }
+  },
+  "features": {
+    "enable_state_tracking": true,
+    "enable_idempotent_upserts": true,
+    "enable_crash_recovery": true,
+    "enable_metrics": true,
+    "dry_run": false,
+    "exit_when_caught_up": false,
+    "comment_exit_when_caught_up": "If true, exits after catching up (good for one-shot/function). If false, sleeps and continues (good for long-running console/container)."
+  },
+  "monitoring": {
+    "emit_metrics_interval_seconds": 60,
+    "log_progress_every_records": 1000,
+    "health_check_interval_seconds": 300
+  }
+}

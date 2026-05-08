@@ -1,0 +1,36 @@
+# Local testing with Docker Compose
+# Spins up a single long-running container that catches up backlog and continues live
+
+version: '3.8'
+
+services:
+  audit-sync:
+    build: .
+    image: dataverse-audit-sync:latest
+    container_name: audit-sync
+    restart: unless-stopped
+    environment:
+      # Dataverse
+      DATAVERSE_ORG_URL: ${DATAVERSE_ORG_URL}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      
+      # Snowflake
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-AUDIT_DB}
+      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-PUBLIC}
+      
+      # Optional: only process one entity (run multiple containers for parallelism)
+      # ENTITY: Account
+      
+      # Optional: backfill from a specific date
+      # OVERRIDE_START_TIME: 2026-01-01T00:00:00
+    
+    volumes:
+      - ./logs:/app/logs
+    
+    # Single instance is fine - it processes all entities
+    # For higher parallelism, run multiple containers each with ENTITY env var

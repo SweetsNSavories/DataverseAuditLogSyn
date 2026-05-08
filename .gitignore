@@ -1,0 +1,45 @@
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ----- Environment -----
+.env
+.env.local
+*.env
+!.env.example
+
+# ----- Logs -----
+logs/
+*.log
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ----- Azure Functions -----
+# Note: unified-deployment/local.settings.json is a template with placeholders only.
+# When you fill in real secrets, copy to local.settings.json.local (which IS ignored).
+local.settings.json.local
+bin/
+.python_packages/
+
+# ----- .NET (legacy folders) -----
+obj/
+bin/
+*.user
+*.suo
+
+# ----- OS -----
+.DS_Store
+Thumbs.db

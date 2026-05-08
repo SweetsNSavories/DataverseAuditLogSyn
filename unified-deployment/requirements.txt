@@ -1,0 +1,18 @@
+# Core dependencies for unified deployment
+# Works for: console job, Docker container, Azure Function
+
+# HTTP client (async)
+aiohttp==3.9.1
+
+# OAuth 2.0 / Microsoft Entra ID
+msal==1.25.0
+
+# Snowflake connector
+snowflake-connector-python==3.6.0
+
+# Environment variable loader (for .env files in console/container mode)
+python-dotenv==1.0.0
+
+# Azure Functions runtime (only needed if deploying as Function App)
+# Safe to install for all hosts - won't activate unless function_app.py is the entry point
+azure-functions==1.18.0
