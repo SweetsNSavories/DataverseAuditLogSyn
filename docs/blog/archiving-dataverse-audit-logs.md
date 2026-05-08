@@ -145,11 +145,15 @@ Authorization: Bearer <token>
 
 This is where the *forensic* content lives — `OldValue`, `NewValue`, `ChangedAttributes`, related-record context. It's also the most expensive call in the pipeline (one per row, computed at read-time by Dataverse). Concurrency is bounded with an `asyncio.Semaphore` per entity to keep parallel requests below whatever your environment's service-protection limit allows. The reference default is conservative — raise it only after you've watched a clean run.
 
-### Why concurrency lives at the entity level, not the row level
+### Why concurrency is bounded *globally*, not per-entity
 
-Dataverse's [service-protection limits](https://learn.microsoft.com/power-apps/developer/data-platform/api-limits) are evaluated **per user, per Web API endpoint, per five-minute window**. Hammering one entity with hundreds of parallel `RetrieveAuditDetails` calls is the fastest way to get throttled (HTTP 429 with a `Retry-After` header). Spreading the same total concurrency budget across multiple entities — say, 4 entities × 8 in-flight detail calls each — keeps every individual entity below its protection threshold while still using the network. That's why the reference orchestrator runs entities concurrently with `asyncio.gather` and uses a per-entity semaphore inside, instead of one giant pool.
+Dataverse's [service-protection limits](https://learn.microsoft.com/power-apps/developer/data-platform/api-limits) are scored **per user, per Web API endpoint, per five-minute window** — and this whole pipeline authenticates as a single application user. That means every entity worker is drawing from the *same* throttling budget. Running 4 entities × 8 in-flight `RetrieveAuditDetails` calls each looks like 32 concurrent calls to Dataverse, regardless of how the orchestrator partitions them internally. The 5-minute service-protection counter doesn't care which entity the call was for; it cares which user issued it.
 
-When you do get a 429, the SDK / `aiohttp` retry path honours the `Retry-After` value rather than backing off blindly. This matters: a fixed 30-second back-off when Dataverse is asking for 2 seconds is a 15× throughput tax for no reason.
+So the practical knob is the *total* in-flight request count, not the per-entity concurrency. The reference orchestrator does run entities concurrently with `asyncio.gather` (because the per-entity work is independent and that wins on wall-clock for the paged header fetch and the CPU-bound JSON shaping), and it bounds per-entity detail concurrency with an `asyncio.Semaphore`, but the configuration value that actually controls throttling is the *product* — `max_concurrent_entities` × per-entity detail-call concurrency. Tune that product against your tenant's service-protection limits, not either knob in isolation.
+
+If you need to run higher than a single application user can sustain, the only correct fix is to add another application user (a second app registration with its own privileges on the audit table) and shard the entity list between them. The orchestrator already supports that natively via the `ENTITY` env var — two copies of the same image, two app users, two independent throttling budgets, no code change.
+
+When you do get throttled, the response is HTTP 429 with a `Retry-After` header. The client honours that value rather than backing off blindly. This matters: a fixed 30-second back-off when Dataverse is asking for 2 seconds is a 15× throughput tax for no reason.
 
 ### State container schema
 
